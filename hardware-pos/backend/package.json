@@ -1,0 +1,23 @@
+{
+  "name": "hardware-pos-backend",
+  "version": "1.0.0",
+  "description": "Price Management + Inventory Audit backend for hardware store POS",
+  "main": "server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node --no-warnings server.js",
+    "dev": "node --no-warnings server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "exceljs": "^3.4.0",
+    "express": "^4.19.2",
+    "multer": "^2.2.0",
+    "pg": "^8.22.0"
+  },
+  "notes": "Uses Node's built-in node:sqlite module (no native build step, no better-sqlite3). Requires Node 22.5+ (Node 22.22 tested)."
+}
