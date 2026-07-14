@@ -1,3 +1,4 @@
 start.bat
 node_modules
 uploads
+hardware_pos.sql

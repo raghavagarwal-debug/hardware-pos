@@ -2,3 +2,6 @@ node_modules
 .env
 uploads
 dist
+store.db
+store.db-shm
+store.db-wal
