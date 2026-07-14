@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../AuthContext.jsx';
 
-export default function Login() {
+export default function Login({ onToggleView }) {
   const { login } = useAuth();
   const navigate = useNavigate();
   const [username, setUsername] = useState('');
@@ -45,6 +45,17 @@ export default function Login() {
           <button className="btn btn-primary" style={{ width: '100%' }} disabled={busy}>
             {busy ? 'Signing in…' : 'Sign in'}
           </button>
+
+          <div style={{ marginTop: 18, textAlign: 'center', fontSize: 13, color: 'var(--text-dim)' }}>
+            Don't have a store?{' '}
+            <button 
+              type="button"
+              onClick={onToggleView}
+              style={{ background: 'none', border: 'none', color: 'var(--hazard)', fontWeight: 600, cursor: 'pointer', padding: 0, fontSize: 'inherit', fontFamily: 'inherit' }}
+            >
+              Register Store
+            </button>
+          </div>
         </form>
       </div>
     </div>

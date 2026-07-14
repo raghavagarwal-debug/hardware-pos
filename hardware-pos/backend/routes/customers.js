@@ -30,7 +30,7 @@ router.get('/', async (req, res) => {
           SUM(amount_paid) AS total_paid_invoices,
           MAX(created_at) AS last_invoice_date
         FROM invoices
-        WHERE customer_phone IS NOT NULL AND customer_phone != ''
+        WHERE tenant_id = $1 AND customer_phone IS NOT NULL AND customer_phone != ''
         GROUP BY customer_phone
       ) i ON i.customer_phone = c.phone
       LEFT JOIN (
@@ -39,10 +39,12 @@ router.get('/', async (req, res) => {
           SUM(amount) AS total_paid_standalone,
           MAX(created_at) AS last_payment_date
         FROM payments
+        WHERE tenant_id = $1
         GROUP BY customer_phone
       ) p ON p.customer_phone = c.phone
+      WHERE c.tenant_id = $1
       ORDER BY c.name ASC
-    `);
+    `, [req.user.tenant_id]);
     res.json({ customers: result.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -58,8 +60,8 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'Name and Phone are required' });
   }
   try {
-    await db.query('INSERT INTO customers (name, phone, notes) VALUES ($1, $2, $3)', [name, phone, notes]);
-    const result = await db.query('SELECT * FROM customers WHERE phone = $1', [phone]);
+    await db.query('INSERT INTO customers (tenant_id, name, phone, notes) VALUES ($1, $2, $3, $4)', [req.user.tenant_id, name, phone, notes]);
+    const result = await db.query('SELECT * FROM customers WHERE phone = $1 AND tenant_id = $2', [phone, req.user.tenant_id]);
     res.status(201).json({ customer: result.rows[0] });
   } catch (err) {
     if (err.message.includes('unique constraint') || err.message.includes('UNIQUE constraint failed')) {
@@ -114,68 +116,30 @@ router.get("/export-all", async (req, res) => {
         SELECT
             c.name,
             c.phone,
-
             COALESCE(i.total_purchased,0) AS total_purchased,
-
-            (COALESCE(i.total_paid_invoices,0)
-            +
-            COALESCE(p.total_paid_standalone,0))
-            AS total_paid,
-
-            (COALESCE(i.total_purchased,0)
-
-            -
-
-            (
-
-            COALESCE(i.total_paid_invoices,0)
-
-            +
-
-            COALESCE(p.total_paid_standalone,0)
-
-            )
-
-            ) AS outstanding_due
-
+            (COALESCE(i.total_paid_invoices,0) + COALESCE(p.total_paid_standalone,0)) AS total_paid,
+            (COALESCE(i.total_purchased,0) - (COALESCE(i.total_paid_invoices,0) + COALESCE(p.total_paid_standalone,0))) AS outstanding_due
         FROM customers c
-
         LEFT JOIN(
-
             SELECT
-
             customer_phone,
-
             SUM(total_amount) total_purchased,
-
             SUM(amount_paid) total_paid_invoices
-
             FROM invoices
-
+            WHERE tenant_id = $1
             GROUP BY customer_phone
-
-        ) i
-
-        ON c.phone=i.customer_phone
-
+        ) i ON c.phone=i.customer_phone
         LEFT JOIN(
-
             SELECT
-
             customer_phone,
-
             SUM(amount) total_paid_standalone
-
             FROM payments
-
+            WHERE tenant_id = $1
             GROUP BY customer_phone
-
-        ) p
-
-        ON c.phone=p.customer_phone
-
+        ) p ON c.phone=p.customer_phone
+        WHERE c.tenant_id = $1
         ORDER BY c.name
-        `);
+        `, [req.user.tenant_id]);
 
     //---------------------------------------------------
     // LOOP THROUGH EVERY CUSTOMER
@@ -240,48 +204,27 @@ router.get("/export-all", async (req, res) => {
       //----------------------------------------------
 
       const ledger = await db.query(`
-
             SELECT
-
             'Invoice' AS type,
-
             NULL AS ref,
-
             total_amount,
-
             amount_paid,
-
             created_at,
-
             '' remarks
-
             FROM invoices
-
-            WHERE customer_phone=$1
-
+            WHERE customer_phone=$1 AND tenant_id=$3
             UNION ALL
-
             SELECT
-
             'Payment',
-
             'PMT-'||id,
-
             amount,
-
             amount,
-
             created_at,
-
             remarks
-
             FROM payments
-
-            WHERE customer_phone=$2
-
+            WHERE customer_phone=$2 AND tenant_id=$3
             ORDER BY created_at
-
-            `, [customer.phone, customer.phone]);
+            `, [customer.phone, customer.phone, req.user.tenant_id]);
 
       //----------------------------------------------
       // INSERT LEDGER ROWS
@@ -382,7 +325,7 @@ router.get('/inactive', async (req, res) => {
           SUM(total_amount) AS total_purchased,
           SUM(amount_paid) AS total_paid_invoices
         FROM invoices
-        WHERE customer_phone IS NOT NULL AND customer_phone != ''
+        WHERE tenant_id = $2 AND customer_phone IS NOT NULL AND customer_phone != ''
         GROUP BY customer_phone
       ) i ON i.customer_phone = c.phone
       LEFT JOIN (
@@ -390,11 +333,12 @@ router.get('/inactive', async (req, res) => {
           customer_phone,
           SUM(amount) AS total_paid_standalone
         FROM payments
+        WHERE tenant_id = $2
         GROUP BY customer_phone
       ) p ON p.customer_phone = c.phone
-      WHERE i.last_purchase IS NULL OR i.last_purchase < NOW() - $1 * INTERVAL '1 day'
+      WHERE c.tenant_id = $2 AND (i.last_purchase IS NULL OR i.last_purchase < NOW() - $1 * INTERVAL '1 day')
       ORDER BY days_inactive DESC NULLS FIRST, c.name ASC
-    `, [days]);
+    `, [days, req.user.tenant_id]);
 
     res.json({ customers: result.rows });
   } catch (err) {
@@ -424,8 +368,7 @@ router.get('/:phone', async (req, res) => {
           SUM(amount_paid) AS total_paid_invoices,
           MAX(created_at) AS last_invoice_date
         FROM invoices
-WHERE customer_phone = $1
-AND is_deleted = 0
+        WHERE customer_phone = $1 AND tenant_id = $4 AND is_deleted = 0
         GROUP BY customer_phone
       ) i ON i.customer_phone = c.phone
       LEFT JOIN (
@@ -434,11 +377,11 @@ AND is_deleted = 0
           SUM(amount) AS total_paid_standalone,
           MAX(created_at) AS last_payment_date
         FROM payments
-        WHERE customer_phone = $2
+        WHERE customer_phone = $2 AND tenant_id = $4
         GROUP BY customer_phone
       ) p ON p.customer_phone = c.phone
-      WHERE c.phone = $3
-    `, [phone, phone, phone]);
+      WHERE c.phone = $3 AND c.tenant_id = $4
+    `, [phone, phone, phone, req.user.tenant_id]);
 
     const customer = customerRes.rows[0];
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
@@ -457,8 +400,7 @@ payment_status,
 created_at,
 '' AS remarks
 FROM invoices
-WHERE customer_phone = $1
-AND is_deleted = 0
+WHERE customer_phone = $1 AND tenant_id = $3 AND is_deleted = 0
 
 UNION ALL
 
@@ -474,10 +416,10 @@ amount AS amount_paid,
 created_at,
 remarks
 FROM payments
-WHERE customer_phone = $2
+WHERE customer_phone = $2 AND tenant_id = $3
 
 ORDER BY created_at DESC
-`, [phone, phone]);
+`, [phone, phone, req.user.tenant_id]);
 
     res.json({ customer, ledger: ledgerRes.rows });
   } catch (err) {
@@ -492,7 +434,7 @@ router.put('/:phone', async (req, res) => {
   const { phone } = req.params;
   const { name, newPhone, notes } = req.body;
   try {
-    const customerRes = await db.query('SELECT * FROM customers WHERE phone = $1', [phone]);
+    const customerRes = await db.query('SELECT * FROM customers WHERE phone = $1 AND tenant_id = $2', [phone, req.user.tenant_id]);
     const customer = customerRes.rows[0];
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
 
@@ -502,11 +444,11 @@ router.put('/:phone', async (req, res) => {
 
     const runUpdate = db.transaction(async (client) => {
       // Update customer table
-      await client.query('UPDATE customers SET name = $1, phone = $2, notes = $3 WHERE phone = $4', [updatedName, updatedPhone, updatedNotes, phone]);
+      await client.query('UPDATE customers SET name = $1, phone = $2, notes = $3 WHERE phone = $4 AND tenant_id = $5', [updatedName, updatedPhone, updatedNotes, phone, req.user.tenant_id]);
 
       // If phone number changed, manually update in invoices (since invoices has no FK cascade)
       if (updatedPhone !== phone) {
-        await client.query('UPDATE invoices SET customer_phone = $1 WHERE customer_phone = $2', [updatedPhone, phone]);
+        await client.query('UPDATE invoices SET customer_phone = $1 WHERE customer_phone = $2 AND tenant_id = $3', [updatedPhone, phone, req.user.tenant_id]);
       }
     });
 
@@ -524,8 +466,8 @@ router.delete('/:phone', async (req, res) => {
   const { phone } = req.params;
   try {
     const runDelete = db.transaction(async (client) => {
-      await client.query('DELETE FROM customers WHERE phone = $1', [phone]);
-      await client.query('UPDATE invoices SET customer_phone = \'\' WHERE customer_phone = $1', [phone]);
+      await client.query('DELETE FROM customers WHERE phone = $1 AND tenant_id = $2', [phone, req.user.tenant_id]);
+      await client.query('UPDATE invoices SET customer_phone = \'\' WHERE customer_phone = $1 AND tenant_id = $2', [phone, req.user.tenant_id]);
     });
     await runDelete();
     res.json({ success: true });
@@ -544,7 +486,7 @@ router.post('/:phone/payments', async (req, res) => {
     return res.status(400).json({ error: 'Amount must be greater than zero' });
   }
   try {
-    await db.query('INSERT INTO payments (customer_phone, amount, remarks) VALUES ($1, $2, $3)', [phone, Number(amount), remarks]);
+    await db.query('INSERT INTO payments (tenant_id, customer_phone, amount, remarks) VALUES ($1, $2, $3, $4)', [req.user.tenant_id, phone, Number(amount), remarks]);
     res.status(201).json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -557,6 +499,11 @@ router.post('/:phone/payments', async (req, res) => {
 router.delete('/payments/:id', async (req, res) => {
   const { id } = req.params;
   try {
+    // First, verify the payment belongs to this tenant
+    const check = await db.query('SELECT tenant_id FROM payments WHERE id = $1', [id]);
+    if (check.rows.length === 0) return res.status(404).json({ error: 'Payment not found' });
+    if (check.rows[0].tenant_id !== req.user.tenant_id) return res.status(403).json({ error: 'Access denied' });
+
     await db.query('DELETE FROM payments WHERE id = $1', [id]);
     res.json({ success: true });
   } catch (err) {

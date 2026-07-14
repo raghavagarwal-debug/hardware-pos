@@ -33,7 +33,12 @@ async function request(path, { method = 'GET', body } = {}) {
 
 export const api = {
   login: (username, password) => request('/auth/login', { method: 'POST', body: { username, password } }),
+  register: (storeName, username, password, displayName) => request('/auth/register', { method: 'POST', body: { storeName, username, password, displayName } }),
   me: () => request('/auth/me'),
+  getUsers: () => request('/auth/users'),
+  createUser: (payload) => request('/auth/users', { method: 'POST', body: payload }),
+  deleteUser: (id) => request(`/auth/users/${id}`, { method: 'DELETE' }),
+  updateTenantSettings: (payload) => request('/auth/tenant-settings', { method: 'PUT', body: payload }),
 
   products: () => request('/products'),
   product: (id) => request(`/products/${id}`),

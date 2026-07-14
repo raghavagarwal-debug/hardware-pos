@@ -3,12 +3,11 @@ import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { formatWhatsAppNumber } from '../utils/phone';
 import { useAuth } from '../AuthContext.jsx';
-import { getSetting } from '../utils/settings';
 
 export default function NewInvoice() {
   const [searchParams] = useSearchParams();
   const phoneParam = searchParams.get('phone');
-  const { isOwner } = useAuth();
+  const { isOwner, tenant } = useAuth();
 
   const [products, setProducts] = useState([]);
   const [customers, setCustomers] = useState([]);
@@ -20,6 +19,15 @@ export default function NewInvoice() {
   const [error, setError] = useState('');
   const [invoice, setInvoice] = useState(null);
   const [extraCharges, setExtraCharges] = useState([]);
+  const [applyGst, setApplyGst] = useState(true);
+
+  useEffect(() => {
+    if (tenant && Number(tenant.gst_rate) > 0) {
+      setApplyGst(true);
+    } else {
+      setApplyGst(false);
+    }
+  }, [tenant]);
 
   // Editing invoice state
   const [editingInvoiceId, setEditingInvoiceId] = useState(null);
@@ -335,11 +343,14 @@ export default function NewInvoice() {
     const p = productMap[l.product_id];
     return sum + (p ? Number(l.selling_price || 0) * Number(l.quantity || 0) : 0);
   }, 0);
+  const gstRate = Number(tenant?.gst_rate || 0);
+  const gstAmount = Number(((total * gstRate) / 100).toFixed(2));
+
   const extraTotal = extraCharges.reduce(
     (sum, charge) => sum + Number(charge.amount || 0),
     0
   );
-  const grandTotal = Number((total + extraTotal).toFixed(2));
+  const grandTotal = Number((total + extraTotal + gstAmount).toFixed(2));
 
   const paidAmount = Number(
     (
@@ -387,7 +398,7 @@ export default function NewInvoice() {
       return;
     }
 
-    const calculatedPaid = paymentStatus === 'Paid' ? total : (Number(amountPaid) || 0);
+    const calculatedPaid = paymentStatus === 'Paid' ? grandTotal : (Number(amountPaid) || 0);
 
     try {
       let result;
@@ -397,7 +408,8 @@ export default function NewInvoice() {
         items,
         payment_status: paymentStatus,
         amount_paid: calculatedPaid,
-        extraCharges
+        extraCharges,
+        apply_gst: applyGst
       };
 
       if (editingInvoiceId) {
@@ -455,17 +467,17 @@ export default function NewInvoice() {
         <div className="card print-receipt-container" style={{ borderColor: 'var(--ledger-green)', maxWidth: 600, margin: '0 auto 20px auto' }}>
           <div className="receipt-header" style={{ textAlign: 'center', marginBottom: 20 }}>
             <h2 style={{ margin: 0, fontFamily: 'var(--font-display)', color: 'var(--ledger-green)' }}>
-              {getSetting('shop_name', 'ShopSphere')}
+              {tenant?.name || 'ShopSphere'}
             </h2>
             <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-              {getSetting('shop_address', 'Jamshedpur')}
+              {tenant?.address || 'Jamshedpur'}
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-              Phone: {getSetting('shop_phone', '+91 1234567890')}
+              Phone: {tenant?.phone || '+91 1234567890'}
             </div>
-            {getSetting('shop_gstin', '') && (
+            {tenant?.gstin && (
               <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-                GSTIN: {getSetting('shop_gstin', '')}
+                GSTIN: {tenant.gstin}
               </div>
             )}
             <hr style={{ border: 'none', borderTop: '1px dashed var(--line)', margin: '12px 0' }} />
@@ -478,50 +490,68 @@ export default function NewInvoice() {
             <div><strong>Billed By:</strong> {invoice.invoice.created_by}</div>
           </div>
 
-          <table className="ledger" style={{ marginBottom: 16 }}>
-            <thead>
-              <tr>
-                <th>Product</th>
-                <th className="num">Qty</th>
-                <th className="num">Rate</th>
-                <th className="num">Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              {invoice.items.map((it) => (
-                <tr key={it.id}>
-                  <td>{it.product_name}</td>
-                  <td className="num">{it.quantity}</td>
-                  <td className="num">₹{it.selling_price.toFixed(2)}</td>
-                  <td className="num">₹{it.line_total.toFixed(2)}</td>
+          <div className="table-responsive">
+            <table className="ledger" style={{ marginBottom: 16 }}>
+              <thead>
+                <tr>
+                  <th>Product</th>
+                  <th className="num">Qty</th>
+                  <th className="num">Rate</th>
+                  <th className="num">Amount</th>
                 </tr>
-              ))}
-              {invoice.extraCharges?.length > 0 && (
-                <>
-                  <tr>
-                    <td colSpan="4">
-                      <hr />
-                    </td>
+              </thead>
+              <tbody>
+                {invoice.items.map((it) => (
+                  <tr key={it.id}>
+                    <td>{it.product_name}</td>
+                    <td className="num">{it.quantity}</td>
+                    <td className="num">₹{it.selling_price.toFixed(2)}</td>
+                    <td className="num">₹{it.line_total.toFixed(2)}</td>
                   </tr>
-                  {invoice.extraCharges.map((charge) => (
-                    <tr key={charge.id}>
-                      <td colSpan="3">
-                        {charge.charge_type}
-                      </td>
-
-                      <td className="num">
-                        ₹{Number(charge.amount).toFixed(2)}
+                ))}
+                {invoice.extraCharges?.length > 0 && (
+                  <>
+                    <tr>
+                      <td colSpan="4">
+                        <hr />
                       </td>
                     </tr>
-                  ))}
-                </>
-              )}
-            </tbody>
-          </table>
+                    {invoice.extraCharges.map((charge) => (
+                      <tr key={charge.id}>
+                        <td colSpan="3">
+                          {charge.charge_type}
+                        </td>
+
+                        <td className="num">
+                          ₹{Number(charge.amount).toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </>
+                )}
+              </tbody>
+            </table>
+          </div>
 
 
 
           <div style={{ borderTop: '1px dashed var(--line)', paddingTop: 12, fontSize: 14 }}>
+            {Number(invoice.invoice.gst_rate) > 0 && (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <span>Subtotal:</span>
+                  <span>₹{(Number(invoice.invoice.total_amount) - Number(invoice.invoice.gst_amount) - (invoice.extraCharges || []).reduce((s, c) => s + Number(c.amount), 0)).toFixed(2)}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <span>CGST ({(invoice.invoice.gst_rate / 2).toFixed(2).replace(/\.00$/, '')}%):</span>
+                  <span>₹{(Number(invoice.invoice.gst_amount) / 2).toFixed(2)}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <span>SGST ({(invoice.invoice.gst_rate / 2).toFixed(2).replace(/\.00$/, '')}%):</span>
+                  <span>₹{(Number(invoice.invoice.gst_amount) / 2).toFixed(2)}</span>
+                </div>
+              </>
+            )}
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
               <span>Total Amount:</span>
               <strong style={{ fontSize: 16 }}>₹{invoice.invoice.total_amount.toFixed(2)}</strong>
@@ -940,7 +970,21 @@ export default function NewInvoice() {
               </button>
 
               {/* Payment Section */}
-              <div className="payment-options" style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--line)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
+              <div className="payment-options" style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--line)', display: 'grid', gap: 16, marginBottom: 20 }}>
+                {/* {Number(tenant?.gst_rate || 0) > 0 && (
+                  <div className="field" style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', userSelect: 'none', margin: '4px 0 10px 0' }}>
+                    <input
+                      id="apply-gst-checkbox"
+                      type="checkbox"
+                      checked={applyGst}
+                      onChange={(e) => setApplyGst(e.target.checked)}
+                      style={{ width: 18, height: 18, cursor: 'pointer', margin: 0 }}
+                    />
+                    <label htmlFor="apply-gst-checkbox" style={{ fontWeight: 600, fontSize: 13.5, cursor: 'pointer', margin: 0 }}>
+                      Apply GST (CGST/SGST total {tenant.gst_rate}%)
+                    </label>
+                  </div>
+                )} */}
                 <div className="field">
                   <label>Payment Mode / Status</label>
                   <select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value)}>
@@ -982,6 +1026,17 @@ export default function NewInvoice() {
                   <div style={{ fontSize: 16, marginBottom: 6 }}>
                     <strong>Subtotal:</strong> ₹{total.toFixed(2)}
                   </div>
+
+                  {gstRate > 0 && (
+                    <>
+                      <div style={{ fontSize: 16, marginBottom: 6 }}>
+                        <strong>CGST ({(gstRate / 2).toFixed(2).replace(/\.00$/, '')}%):</strong> ₹{(gstAmount / 2).toFixed(2)}
+                      </div>
+                      <div style={{ fontSize: 16, marginBottom: 6 }}>
+                        <strong>SGST ({(gstRate / 2).toFixed(2).replace(/\.00$/, '')}%):</strong> ₹{(gstAmount / 2).toFixed(2)}
+                      </div>
+                    </>
+                  )}
 
                   <div style={{ fontSize: 16, marginBottom: 6 }}>
                     <strong>Extra Charges:</strong> ₹{extraTotal.toFixed(2)}

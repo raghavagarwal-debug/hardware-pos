@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { formatWhatsAppNumber } from '../utils/phone';
-import { getSetting } from '../utils/settings';
+import { useAuth } from '../AuthContext.jsx';
 
 const menuStyle = {
   width: "100%",
@@ -16,6 +16,7 @@ const menuStyle = {
 
 export default function CustomerLedger() {
   const navigate = useNavigate();
+  const { tenant } = useAuth();
   const [customers, setCustomers] = useState([]);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [ledger, setLedger] = useState([]);
@@ -562,7 +563,7 @@ export default function CustomerLedger() {
               </div>
 
               {/* History and Notes Row */}
-              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 20 }}>
+              <div className="ledger-action-grid">
 
                 {/* Ledger Transactions */}
                 <div>
@@ -580,7 +581,7 @@ export default function CustomerLedger() {
                   ) : ledger.length === 0 ? (
                     <div className="empty-state">No transaction records found for this account.</div>
                   ) : (
-                    <div style={{ maxHeight: 380, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 4 }}>
+                    <div style={{ maxHeight: 380, overflowY: 'auto', overflowX: 'auto', border: '1px solid var(--line)', borderRadius: 4 }}>
                       <table className="ledger" style={{ fontSize: 13 }}>
                         <thead>
                           <tr>
@@ -879,7 +880,7 @@ export default function CustomerLedger() {
                     marginBottom: 6
                   }}
                 >
-                  {getSetting('shop_name', 'ShopSphere')}
+                  {tenant?.name || 'ShopSphere'}
                 </div>
 
                 <div
@@ -890,13 +891,13 @@ export default function CustomerLedger() {
                     marginBottom: 10
                   }}
                 >
-                  {getSetting('shop_address', 'Jamshedpur')}
+                  {tenant?.address || 'Jamshedpur'}
                   <br />
-                  Phone: {getSetting('shop_phone', '+91 1234567890')}
-                  {getSetting('shop_gstin', '') && (
+                  Phone: {tenant?.phone || '+91 1234567890'}
+                  {tenant?.gstin && (
                     <>
                       <br />
-                      GSTIN: {getSetting('shop_gstin', '')}
+                      GSTIN: {tenant.gstin}
                     </>
                   )}
                   &nbsp;
@@ -1013,42 +1014,44 @@ export default function CustomerLedger() {
                   Purchased Items
                 </div>
 
-                <table
-                  className="ledger"
-                  style={{
-                    width: "100%",
-                    fontSize: 12.5
-                  }}
-                >
-                  <thead>
-                    <tr>
-                      <th>Product</th>
-                      <th className="num">Qty</th>
-                      <th className="num">Rate</th>
-                      <th className="num">Total</th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    {selectedInvoice.items.map((item) => (
-                      <tr key={item.id}>
-                        <td>{item.product_name}</td>
-
-                        <td className="num">
-                          {item.quantity}
-                        </td>
-
-                        <td className="num">
-                          ₹{Number(item.selling_price).toFixed(2)}
-                        </td>
-
-                        <td className="num">
-                          ₹{Number(item.line_total).toFixed(2)}
-                        </td>
+                <div className="table-responsive">
+                  <table
+                    className="ledger"
+                    style={{
+                      width: "100%",
+                      fontSize: 12.5
+                    }}
+                  >
+                    <thead>
+                      <tr>
+                        <th>Product</th>
+                        <th className="num">Qty</th>
+                        <th className="num">Rate</th>
+                        <th className="num">Total</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+
+                    <tbody>
+                      {selectedInvoice.items.map((item) => (
+                        <tr key={item.id}>
+                          <td>{item.product_name}</td>
+
+                          <td className="num">
+                            {item.quantity}
+                          </td>
+
+                          <td className="num">
+                            ₹{Number(item.selling_price).toFixed(2)}
+                          </td>
+
+                          <td className="num">
+                            ₹{Number(item.line_total).toFixed(2)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
 
               {/* Extra Charges */}
@@ -1068,25 +1071,27 @@ export default function CustomerLedger() {
                       Extra Charges
                     </div>
 
-                    <table
-                      className="ledger"
-                      style={{
-                        width: "100%",
-                        fontSize: 12.5
-                      }}
-                    >
-                      <tbody>
-                        {selectedInvoice.extraCharges.map((charge) => (
-                          <tr key={charge.id}>
-                            <td>{charge.charge_type}</td>
+                    <div className="table-responsive">
+                      <table
+                        className="ledger"
+                        style={{
+                          width: "100%",
+                          fontSize: 12.5
+                        }}
+                      >
+                        <tbody>
+                          {selectedInvoice.extraCharges.map((charge) => (
+                            <tr key={charge.id}>
+                              <td>{charge.charge_type}</td>
 
-                            <td className="num">
-                              ₹{Number(charge.amount).toFixed(2)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                              <td className="num">
+                                ₹{Number(charge.amount).toFixed(2)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </>
                 )}
 
@@ -1108,6 +1113,22 @@ export default function CustomerLedger() {
                   fontSize: 13
                 }}
               >
+                {Number(selectedInvoice.gst_rate) > 0 && (
+                  <>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span>Subtotal:</span>
+                      <span>₹{(Number(selectedInvoice.total_amount) - Number(selectedInvoice.gst_amount) - (selectedInvoice.extraCharges || []).reduce((s, c) => s + Number(c.amount), 0)).toFixed(2)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span>CGST ({(selectedInvoice.gst_rate / 2).toFixed(2).replace(/\.00$/, '')}%):</span>
+                      <span>₹{(Number(selectedInvoice.gst_amount) / 2).toFixed(2)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span>SGST ({(selectedInvoice.gst_rate / 2).toFixed(2).replace(/\.00$/, '')}%):</span>
+                      <span>₹{(Number(selectedInvoice.gst_amount) / 2).toFixed(2)}</span>
+                    </div>
+                  </>
+                )}
                 <div
                   style={{
                     display: "flex",

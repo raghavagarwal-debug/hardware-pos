@@ -12,8 +12,8 @@ export const setSetting = (key, value) => {
   localStorage.setItem(`settings_${key}`, JSON.stringify(value));
 };
 
-export const applyTheme = () => {
-  const theme = getSetting('theme', 'default');
+export const applyTheme = (themeName) => {
+  const theme = themeName || getSetting('theme', 'default');
   
   // Remove existing themes
   document.documentElement.className = '';

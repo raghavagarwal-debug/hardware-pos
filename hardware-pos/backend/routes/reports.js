@@ -15,10 +15,10 @@ router.get('/daily-stock-movement', async (req, res) => {
              SUM(CASE WHEN quantity < 0 THEN -quantity ELSE 0 END) AS stock_out,
              SUM(quantity) AS net_change
       FROM inventory_transactions
-      WHERE created_at::date = $1::date
+      WHERE tenant_id = $2 AND created_at::date = $1::date
       GROUP BY product_id, product_name
       ORDER BY product_name
-    `, [date]);
+    `, [date, req.user.tenant_id]);
     res.json({ date, movement: result.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -35,10 +35,10 @@ router.get('/monthly-stock-movement', async (req, res) => {
              SUM(CASE WHEN quantity < 0 THEN -quantity ELSE 0 END) AS stock_out,
              SUM(quantity) AS net_change
       FROM inventory_transactions
-      WHERE TO_CHAR(created_at, 'YYYY-MM') = $1
+      WHERE tenant_id = $2 AND TO_CHAR(created_at, 'YYYY-MM') = $1
       GROUP BY product_id, product_name
       ORDER BY product_name
-    `, [month]);
+    `, [month, req.user.tenant_id]);
     res.json({ month, movement: result.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -105,7 +105,9 @@ router.get('/fast-moving', async (req, res) => {
       FROM inventory_transactions t
       JOIN products p ON t.product_id = p.id
       WHERE
-        t.transaction_type = 'Sale'
+        t.tenant_id = $4
+        AND p.tenant_id = $4
+        AND t.transaction_type = 'Sale'
         AND COALESCE(p.is_deleted, 0) = 0
         AND DATE(t.created_at) BETWEEN $1 AND $2
       GROUP BY
@@ -115,7 +117,7 @@ router.get('/fast-moving', async (req, res) => {
         units_sold DESC
       LIMIT $3
       `,
-      [from, to, limit]
+      [from, to, limit, req.user.tenant_id]
     );
 
     res.json({
@@ -143,9 +145,10 @@ router.get('/slow-moving', async (req, res) => {
       FROM products p
       LEFT JOIN inventory_transactions t
       ON p.id=t.product_id
+      AND t.tenant_id = $4
       AND t.transaction_type='Sale'
       AND DATE(t.created_at) BETWEEN $1 AND $2
-      WHERE COALESCE(p.is_deleted, 0) = 0
+      WHERE p.tenant_id = $4 AND COALESCE(p.is_deleted, 0) = 0
       GROUP BY
         p.id,
         p.name
@@ -154,7 +157,7 @@ router.get('/slow-moving', async (req, res) => {
         p.name ASC
       LIMIT $3
       `,
-      [from, to, limit]
+      [from, to, limit, req.user.tenant_id]
     );
 
     res.json({

@@ -5,8 +5,8 @@ const { requireAuth } = require('../middleware/auth');
 const router = express.Router();
 router.use(requireAuth);
 
-async function nextInvoiceNumber() {
-  const res = await db.query('SELECT COUNT(*) AS c FROM invoices');
+async function nextInvoiceNumber(tenantId) {
+  const res = await db.query('SELECT COUNT(*) AS c FROM invoices WHERE tenant_id = $1', [tenantId]);
   return `INV-${String(parseInt(res.rows[0].c, 10) + 1).padStart(5, '0')}`;
 }
 
@@ -26,7 +26,7 @@ router.post('/', async (req, res) => {
     // Validate stock availability up front.
     const products = [];
     for (const item of items) {
-      const productRes = await db.query('SELECT * FROM products WHERE id = $1', [item.product_id]);
+      const productRes = await db.query('SELECT * FROM products WHERE id = $1 AND tenant_id = $2', [item.product_id, req.user.tenant_id]);
       const product = productRes.rows[0];
       if (!product) throw new Error(`Product ${item.product_id} not found`);
       const qty = Number(item.quantity);
@@ -43,12 +43,21 @@ router.post('/', async (req, res) => {
     // const invoiceNumber = await nextInvoiceNumber();
     const now = new Date().toISOString();
 
+    const applyGst = req.body.apply_gst !== false;
+    const invoiceNumber = await nextInvoiceNumber(req.user.tenant_id);
     const runTxn = db.transaction(async (client) => {
+      // Query tenant GST rate if apply_gst is true
+      let gstRate = 0;
+      if (applyGst) {
+        const tenantRes = await client.query('SELECT gst_rate FROM tenants WHERE id = $1', [req.user.tenant_id]);
+        gstRate = Number(tenantRes.rows[0]?.gst_rate || 0);
+      }
+
       // Auto-create customer if phone is provided and doesn't exist yet
       if (customer_phone && customer_phone.trim()) {
-        const exists = await client.query('SELECT COUNT(*) AS c FROM customers WHERE phone = $1', [customer_phone]);
+        const exists = await client.query('SELECT COUNT(*) AS c FROM customers WHERE phone = $1 AND tenant_id = $2', [customer_phone, req.user.tenant_id]);
         if (parseInt(exists.rows[0].c, 10) === 0) {
-          await client.query('INSERT INTO customers (name, phone, notes) VALUES ($1, $2, $3)', [customer_name, customer_phone, 'Auto-created via billing']);
+          await client.query('INSERT INTO customers (tenant_id, name, phone, notes) VALUES ($1, $2, $3, $4)', [req.user.tenant_id, customer_name, customer_phone, 'Auto-created via billing']);
         }
       }
 
@@ -56,6 +65,8 @@ router.post('/', async (req, res) => {
       let extraTotal = 0;
       const invoiceInfo = await client.query(`
   INSERT INTO invoices (
+    tenant_id,
+    invoice_number,
     customer_name,
     customer_phone,
     created_by,
@@ -64,9 +75,11 @@ router.post('/', async (req, res) => {
     payment_status,
     created_at
   )
-  VALUES ($1, $2, $3, $4, 0, $5, $6)
+  VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $8)
   RETURNING id
 `, [
+        req.user.tenant_id,
+        invoiceNumber,
         customer_name,
         customer_phone,
         req.user.username,
@@ -91,15 +104,15 @@ router.post('/', async (req, res) => {
               previous_selling_price = $3,
               last_updated_date = $4,
               last_updated_by = $5
-            WHERE id = $6
-          `, [enteredPrice, lastSellingPrice, previousSellingPrice, now, req.user.username, product.id]);
+            WHERE id = $6 AND tenant_id = $7
+          `, [enteredPrice, lastSellingPrice, previousSellingPrice, now, req.user.username, product.id, req.user.tenant_id]);
 
           await client.query(`
             INSERT INTO price_history
-              (product_id, product_name, field_changed, old_price, new_price,
+              (tenant_id, product_id, product_name, field_changed, old_price, new_price,
                updated_by, reason)
-            VALUES ($1, $2, 'selling_price', $3, $4, $5, 'Updated during Billing')
-          `, [product.id, product.name, currentSellingPrice, enteredPrice, req.user.username]);
+            VALUES ($1, $2, $3, 'selling_price', $4, $5, $6, 'Updated during Billing')
+          `, [req.user.tenant_id, product.id, product.name, currentSellingPrice, enteredPrice, req.user.username]);
         }
 
         const lineTotal = enteredPrice * qty;
@@ -112,11 +125,12 @@ router.post('/', async (req, res) => {
 
         const previousStock = product.current_stock;
         const updatedStock = previousStock - qty;
-        await client.query('UPDATE products SET current_stock = $1 WHERE id = $2', [updatedStock, product.id]);
+        await client.query('UPDATE products SET current_stock = $1 WHERE id = $2 AND tenant_id = $3', [updatedStock, product.id, req.user.tenant_id]);
 
         await client.query(`
 INSERT INTO inventory_transactions
 (
+tenant_id,
 product_id,
 product_name,
 transaction_type,
@@ -129,9 +143,10 @@ invoice_id
 )
 VALUES
 (
-$1,$2,'Sale',$3,$4,$5,$6,$7,$8
+$1,$2,$3,'Sale',$4,$5,$6,$7,$8,$9
 )
 `, [
+          req.user.tenant_id,
           product.id,
           product.name,
           -qty,
@@ -171,16 +186,23 @@ $1,$2,'Sale',$3,$4,$5,$6,$7,$8
         ]);
       }
 
-      total += extraTotal;
+      const itemsSubtotal = total;
+      const gstAmount = Number(((itemsSubtotal * gstRate) / 100).toFixed(2));
+      total = Number((itemsSubtotal + extraTotal + gstAmount).toFixed(2));
       const finalAmountPaid = payment_status === 'Paid' ? total : (Number(amount_paid) || 0);
-      const dueAmount = total - finalAmountPaid;
-      await client.query(`UPDATE invoices SET total_amount = $1, amount_paid = $2, due_amount = $3 WHERE id = $4`, [total, finalAmountPaid, dueAmount, invoiceId]);
+      const dueAmount = Number((total - finalAmountPaid).toFixed(2));
+      await client.query(
+        `UPDATE invoices 
+         SET total_amount = $1, amount_paid = $2, due_amount = $3, gst_rate = $4, gst_amount = $5 
+         WHERE id = $6 AND tenant_id = $7`,
+        [total, finalAmountPaid, dueAmount, gstRate, gstAmount, invoiceId, req.user.tenant_id]
+      );
 
       return invoiceId;
     });
 
     const invoiceId = await runTxn();
-    const invoiceRes = await db.query('SELECT * FROM invoices WHERE id = $1 AND is_deleted = 0', [invoiceId]);
+    const invoiceRes = await db.query('SELECT * FROM invoices WHERE id = $1 AND tenant_id = $2 AND is_deleted = 0', [invoiceId, req.user.tenant_id]);
     const lineItemsRes = await db.query('SELECT * FROM invoice_items WHERE invoice_id = $1', [invoiceId]);
     const chargesRes = await db.query(
       'SELECT * FROM invoice_extra_charges WHERE invoice_id=$1',
@@ -192,18 +214,18 @@ $1,$2,'Sale',$3,$4,$5,$6,$7,$8
   }
 });
 
-router.get('/', async (_req, res) => {
+router.get('/', async (req, res) => {
   try {
-    const invoicesRes = await db.query('SELECT *FROM invoices WHERE is_deleted = 0 ORDER BY created_at DESC');
+    const invoicesRes = await db.query('SELECT * FROM invoices WHERE tenant_id = $1 AND is_deleted = 0 ORDER BY created_at DESC', [req.user.tenant_id]);
     res.json({ invoices: invoicesRes.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-router.get('/deleted', async (_req, res) => {
+router.get('/deleted', async (req, res) => {
   try {
-    const invoicesRes = await db.query('SELECT * FROM invoices WHERE is_deleted = 1 ORDER BY deleted_at DESC');
+    const invoicesRes = await db.query('SELECT * FROM invoices WHERE tenant_id = $1 AND is_deleted = 1 ORDER BY deleted_at DESC', [req.user.tenant_id]);
     res.json({ invoices: invoicesRes.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -212,7 +234,7 @@ router.get('/deleted', async (_req, res) => {
 
 router.get('/:id', async (req, res) => {
   try {
-    const invoiceRes = await db.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
+    const invoiceRes = await db.query('SELECT * FROM invoices WHERE id = $1 AND tenant_id = $2', [req.params.id, req.user.tenant_id]);
     const invoice = invoiceRes.rows[0];
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
     const itemsRes = await db.query('SELECT * FROM invoice_items WHERE invoice_id = $1', [req.params.id]);
@@ -229,7 +251,7 @@ router.get('/:id', async (req, res) => {
 router.put('/:id/pay', async (req, res) => {
   const { amount_paid } = req.body;
   try {
-    const invoiceRes = await db.query('SELECT * FROM invoices WHERE id = $1 AND is_deleted = 0', [req.params.id]);
+    const invoiceRes = await db.query('SELECT * FROM invoices WHERE id = $1 AND tenant_id = $2 AND is_deleted = 0', [req.params.id, req.user.tenant_id]);
     const invoice = invoiceRes.rows[0];
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
 
@@ -237,9 +259,9 @@ router.put('/:id/pay', async (req, res) => {
       const newPaid = Number(amount_paid) || 0;
       const status = newPaid >= Number(invoice.total_amount) ? 'Paid' : 'Due';
       const dueAmount = Number(invoice.total_amount) - newPaid;
-      await db.query('UPDATE invoices SET amount_paid = $1,due_amount = $2, payment_status = $3 WHERE id = $4', [newPaid, dueAmount, status, req.params.id]);
+      await db.query('UPDATE invoices SET amount_paid = $1, due_amount = $2, payment_status = $3 WHERE id = $4 AND tenant_id = $5', [newPaid, dueAmount, status, req.params.id, req.user.tenant_id]);
     } else {
-      await db.query('UPDATE invoices SET amount_paid = total_amount, due_amount = 0, payment_status = \'Paid\' WHERE id = $1', [req.params.id]);
+      await db.query('UPDATE invoices SET amount_paid = total_amount, due_amount = 0, payment_status = \'Paid\' WHERE id = $1 AND tenant_id = $2', [req.params.id, req.user.tenant_id]);
     }
 
     res.json({ success: true });
@@ -260,8 +282,8 @@ router.get("/:id/whatsapp", async (req, res) => {
   try {
 
     const invoiceRes = await db.query(
-      "SELECT * FROM invoices WHERE id=$1",
-      [req.params.id]
+      "SELECT * FROM invoices WHERE id=$1 AND tenant_id=$2",
+      [req.params.id, req.user.tenant_id]
     );
 
     if (invoiceRes.rows.length === 0) {
@@ -334,7 +356,13 @@ router.get("/:id/whatsapp", async (req, res) => {
       0
     );
 
-    const subtotal = Number(invoice.total_amount) - extraTotal;
+    const itemsTotal = itemsRes.rows.reduce(
+      (sum, item) => sum + Number(item.line_total),
+      0
+    );
+
+    const gstAmount = Number(invoice.gst_amount) || 0;
+    const gstRate = Number(invoice.gst_rate) || 0;
 
     const due =
       Number(invoice.total_amount) -
@@ -342,7 +370,13 @@ router.get("/:id/whatsapp", async (req, res) => {
 
     message += "-------------------------\n";
 
-    message += `Subtotal : ₹${subtotal.toFixed(2)}\n`;
+    message += `Subtotal : ₹${itemsTotal.toFixed(2)}\n`;
+    if (gstRate > 0) {
+      const halfRate = (gstRate / 2).toFixed(2).replace(/\.00$/, '');
+      const halfAmount = (gstAmount / 2).toFixed(2);
+      message += `CGST (${halfRate}%) : ₹${halfAmount}\n`;
+      message += `SGST (${halfRate}%) : ₹${halfAmount}\n`;
+    }
 
     message += `Extra Charges : ₹${extraTotal.toFixed(2)}\n`;
 
@@ -391,14 +425,14 @@ router.put('/:id', async (req, res) => {
   }
 
   try {
-    const invoiceRes = await db.query('SELECT * FROM invoices WHERE id = $1 AND is_deleted = 0', [id]);
+    const invoiceRes = await db.query('SELECT * FROM invoices WHERE id = $1 AND tenant_id = $2 AND is_deleted = 0', [id, req.user.tenant_id]);
     const oldInvoice = invoiceRes.rows[0];
     if (!oldInvoice) return res.status(404).json({ error: 'Invoice not found' });
 
     // Validate new stock items up front
     const products = [];
     for (const item of items) {
-      const productRes = await db.query('SELECT * FROM products WHERE id = $1', [item.product_id]);
+      const productRes = await db.query('SELECT * FROM products WHERE id = $1 AND tenant_id = $2', [item.product_id, req.user.tenant_id]);
       const product = productRes.rows[0];
       if (!product) throw new Error(`Product ${item.product_id} not found`);
       const qty = Number(item.quantity);
@@ -418,24 +452,24 @@ router.put('/:id', async (req, res) => {
     const runTxn = db.transaction(async (client) => {
       // Revert old customer's ledger or auto-create customer if needed
       if (customer_phone && customer_phone.trim()) {
-        const exists = await client.query('SELECT COUNT(*) AS c FROM customers WHERE phone = $1', [customer_phone]);
+        const exists = await client.query('SELECT COUNT(*) AS c FROM customers WHERE phone = $1 AND tenant_id = $2', [customer_phone, req.user.tenant_id]);
         if (parseInt(exists.rows[0].c, 10) === 0) {
-          await client.query('INSERT INTO customers (name, phone, notes) VALUES ($1, $2, $3)', [customer_name, customer_phone, 'Auto-created via billing']);
+          await client.query('INSERT INTO customers (tenant_id, name, phone, notes) VALUES ($1, $2, $3, $4)', [req.user.tenant_id, customer_name, customer_phone, 'Auto-created via billing']);
         }
       }
 
       // Revert old product stock
       const oldItemsRes = await client.query('SELECT * FROM invoice_items WHERE invoice_id = $1', [id]);
       for (const oldItem of oldItemsRes.rows) {
-        await client.query('UPDATE products SET current_stock = current_stock + $1 WHERE id = $2', [oldItem.quantity, oldItem.product_id]);
+        await client.query('UPDATE products SET current_stock = current_stock + $1 WHERE id = $2 AND tenant_id = $3', [oldItem.quantity, oldItem.product_id, req.user.tenant_id]);
       }
 
       // Delete old items, charges, and inventory transactions
       await client.query('DELETE FROM invoice_items WHERE invoice_id = $1', [id]);
       await client.query('DELETE FROM invoice_extra_charges WHERE invoice_id = $1', [id]);
       await client.query(
-        'DELETE FROM inventory_transactions WHERE remarks = $1',
-        ['Sold']
+        'DELETE FROM inventory_transactions WHERE invoice_id = $1 AND tenant_id = $2',
+        [id, req.user.tenant_id]
       );
 
       // Process new items
@@ -444,7 +478,7 @@ router.put('/:id', async (req, res) => {
 
       for (const { product, qty, enteredPrice } of products) {
         // Fetch current stock after reverting
-        const freshProductRes = await client.query('SELECT * FROM products WHERE id = $1', [product.id]);
+        const freshProductRes = await client.query('SELECT * FROM products WHERE id = $1 AND tenant_id = $2', [product.id, req.user.tenant_id]);
         const freshProduct = freshProductRes.rows[0];
 
         const lineTotal = enteredPrice * qty;
@@ -459,12 +493,13 @@ router.put('/:id', async (req, res) => {
         // Update product stock
         const previousStock = freshProduct.current_stock;
         const updatedStock = previousStock - qty;
-        await client.query('UPDATE products SET current_stock = $1 WHERE id = $2', [updatedStock, freshProduct.id]);
+        await client.query('UPDATE products SET current_stock = $1 WHERE id = $2 AND tenant_id = $3', [updatedStock, freshProduct.id, req.user.tenant_id]);
 
         // Insert inventory transaction
         await client.query(`
 INSERT INTO inventory_transactions
 (
+tenant_id,
 product_id,
 product_name,
 transaction_type,
@@ -477,9 +512,10 @@ invoice_id
 )
 VALUES
 (
-$1,$2,'Sale',$3,$4,$5,$6,$7,$8
+$1,$2,$3,'Sale',$4,$5,$6,$7,$8,$9
 )
 `, [
+          req.user.tenant_id,
           product.id,
           product.name,
           -qty,
@@ -509,8 +545,8 @@ $1,$2,'Sale',$3,$4,$5,$6,$7,$8
       await client.query(`
         UPDATE invoices
         SET customer_name = $1, customer_phone = $2, total_amount = $3, amount_paid = $4, due_amount = $5, payment_status = $6
-        WHERE id = $7
-      `, [customer_name, customer_phone, total, finalAmountPaid, dueAmount, payment_status, id]);
+        WHERE id = $7 AND tenant_id = $8
+      `, [customer_name, customer_phone, total, finalAmountPaid, dueAmount, payment_status, id, req.user.tenant_id]);
 
       return id;
     });
@@ -518,7 +554,7 @@ $1,$2,'Sale',$3,$4,$5,$6,$7,$8
     await runTxn();
 
     // Fetch updated invoice to return
-    const invoiceResUpdated = await db.query('SELECT * FROM invoices WHERE id = $1 AND is_deleted = 0', [id]);
+    const invoiceResUpdated = await db.query('SELECT * FROM invoices WHERE id = $1 AND tenant_id = $2 AND is_deleted = 0', [id, req.user.tenant_id]);
     const lineItemsResUpdated = await db.query('SELECT * FROM invoice_items WHERE invoice_id = $1', [id]);
     const chargesResUpdated = await db.query('SELECT * FROM invoice_extra_charges WHERE invoice_id = $1', [id]);
 
@@ -537,8 +573,8 @@ router.delete("/:id", async (req, res) => {
 
       // Check invoice
       const invoiceRes = await client.query(
-        "SELECT * FROM invoices WHERE id=$1",
-        [id]
+        "SELECT * FROM invoices WHERE id=$1 AND tenant_id=$2",
+        [id, req.user.tenant_id]
       );
 
       if (invoiceRes.rows.length === 0) {
@@ -563,11 +599,12 @@ router.delete("/:id", async (req, res) => {
           `
           UPDATE products
           SET current_stock = current_stock + $1
-          WHERE id=$2
+          WHERE id=$2 AND tenant_id=$3
           `,
           [
             item.quantity,
-            item.product_id
+            item.product_id,
+            req.user.tenant_id
           ]
         );
 
@@ -577,9 +614,9 @@ router.delete("/:id", async (req, res) => {
       await client.query(
         `
         DELETE FROM inventory_transactions
-        WHERE invoice_id=$1
+        WHERE invoice_id=$1 AND tenant_id=$2
         `,
-        [id]
+        [id, req.user.tenant_id]
       );
 
       // Soft delete invoice
@@ -591,12 +628,13 @@ router.delete("/:id", async (req, res) => {
             deleted_at = NOW(),
             deleted_by = $1,
             delete_reason = $2
-        WHERE id=$3
+        WHERE id=$3 AND tenant_id=$4
         `,
         [
           req.user.username,
           "Deleted from Customer Ledger",
-          id
+          id,
+          req.user.tenant_id
         ]
       );
 
@@ -627,8 +665,8 @@ router.post("/:id/restore", async (req, res) => {
     const runTxn = db.transaction(async (client) => {
       // Check invoice
       const invoiceRes = await client.query(
-        "SELECT * FROM invoices WHERE id=$1",
-        [id]
+        "SELECT * FROM invoices WHERE id=$1 AND tenant_id=$2",
+        [id, req.user.tenant_id]
       );
 
       if (invoiceRes.rows.length === 0) {
@@ -651,8 +689,8 @@ router.post("/:id/restore", async (req, res) => {
       for (const item of itemsRes.rows) {
         // Fetch current product stock
         const productRes = await client.query(
-          "SELECT * FROM products WHERE id=$1",
-          [item.product_id]
+          "SELECT * FROM products WHERE id=$1 AND tenant_id=$2",
+          [item.product_id, req.user.tenant_id]
         );
         const product = productRes.rows[0];
         if (!product) {
@@ -664,13 +702,14 @@ router.post("/:id/restore", async (req, res) => {
 
         // Update product stock
         await client.query(
-          "UPDATE products SET current_stock = $1 WHERE id = $2",
-          [updatedStock, product.id]
+          "UPDATE products SET current_stock = $1 WHERE id = $2 AND tenant_id = $3",
+          [updatedStock, product.id, req.user.tenant_id]
         );
 
         // Insert inventory transaction
         await client.query(`
           INSERT INTO inventory_transactions (
+            tenant_id,
             product_id,
             product_name,
             transaction_type,
@@ -680,8 +719,9 @@ router.post("/:id/restore", async (req, res) => {
             performed_by,
             remarks,
             invoice_id
-          ) VALUES ($1, $2, 'Sale', $3, $4, $5, $6, $7, $8)
+          ) VALUES ($1, $2, $3, 'Sale', $4, $5, $6, $7, $8, $9)
         `, [
+          req.user.tenant_id,
           product.id,
           product.name,
           -item.quantity,
@@ -702,9 +742,9 @@ router.post("/:id/restore", async (req, res) => {
             deleted_at = NULL,
             deleted_by = NULL,
             delete_reason = NULL
-        WHERE id=$1
+        WHERE id=$1 AND tenant_id=$2
         `,
-        [id]
+        [id, req.user.tenant_id]
       );
     });
 

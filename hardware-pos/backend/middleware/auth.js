@@ -1,31 +1,37 @@
+const jwt = require('jsonwebtoken');
 const db = require('../db');
-function decodeToken(token) {
-  try {
-    const decoded = Buffer.from(token, 'base64').toString('utf8');
-    const [username, role] = decoded.split(':');
-    if (!username || !role) return null;
-    return { username, role };
-  } catch {
-    return null;
+
+const JWT_SECRET_ENV = process.env.JWT_SECRET;
+if (!JWT_SECRET_ENV) {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('FATAL: JWT_SECRET environment variable is not defined! Setup JWT_SECRET in your environment for deployment.');
+  } else {
+    console.warn('WARNING: JWT_SECRET is not defined. Using a default temporary key.');
   }
 }
+const JWT_SECRET = JWT_SECRET_ENV || 'hardware_pos_jwt_secret_key_123';
 
 async function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
 
-  const decoded = decodeToken(token);
-  if (!decoded) return res.status(401).json({ error: 'Invalid session' });
-
   try {
-    const result = await db.query('SELECT * FROM users WHERE username = $1 AND role = $2', [decoded.username, decoded.role]);
+    const decoded = jwt.verify(token, JWT_SECRET);
+    if (!decoded || !decoded.userId || !decoded.username) {
+      return res.status(401).json({ error: 'Invalid session' });
+    }
+
+    const result = await db.query('SELECT * FROM users WHERE id = $1', [decoded.userId]);
     const user = result.rows[0];
     if (!user) return res.status(401).json({ error: 'Invalid session' });
 
     req.user = user;
     next();
   } catch (err) {
+    if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Invalid or expired session' });
+    }
     return res.status(500).json({ error: 'Database error' });
   }
 }
@@ -37,4 +43,4 @@ function requireOwner(req, res, next) {
   next();
 }
 
-module.exports = { requireAuth, requireOwner };
+module.exports = { requireAuth, requireOwner, JWT_SECRET };

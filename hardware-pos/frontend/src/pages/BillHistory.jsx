@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { api } from '../api';
 import { formatWhatsAppNumber } from '../utils/phone';
-import { getSetting } from '../utils/settings';
+import { useAuth } from '../AuthContext.jsx';
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -11,6 +11,7 @@ const MONTH_NAMES = [
 const WEEKDAY_NAMES = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
 export default function BillHistory() {
+  const { tenant } = useAuth();
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -375,7 +376,7 @@ export default function BillHistory() {
                       marginBottom: 6
                     }}
                   >
-                    {getSetting('shop_name', 'ShopSphere')}
+                    {tenant?.name || 'ShopSphere'}
                   </div>
 
                   <div
@@ -386,13 +387,13 @@ export default function BillHistory() {
                       marginBottom: 10
                     }}
                   >
-                    {getSetting('shop_address', 'Jamshedpur')}
+                    {tenant?.address || 'Jamshedpur'}
                     <br />
-                    Phone: {getSetting('shop_phone', '+91 1234567890')}
-                    {getSetting('shop_gstin', '') && (
+                    Phone: {tenant?.phone || '+91 1234567890'}
+                    {tenant?.gstin && (
                       <>
                         <br />
-                        GSTIN: {getSetting('shop_gstin', '')}
+                        GSTIN: {tenant.gstin}
                       </>
                     )}
                     &nbsp;
@@ -494,6 +495,22 @@ export default function BillHistory() {
 
                 {/* Summary Table */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+                  {Number(modalDetails.invoice.gst_rate) > 0 && (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span>Subtotal:</span>
+                        <span>₹{(Number(modalDetails.invoice.total_amount) - Number(modalDetails.invoice.gst_amount) - (modalDetails.extraCharges || []).reduce((s, c) => s + Number(c.amount), 0)).toFixed(2)}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span>CGST ({(modalDetails.invoice.gst_rate / 2).toFixed(2).replace(/\.00$/, '')}%):</span>
+                        <span>₹{(Number(modalDetails.invoice.gst_amount) / 2).toFixed(2)}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span>SGST ({(modalDetails.invoice.gst_rate / 2).toFixed(2).replace(/\.00$/, '')}%):</span>
+                        <span>₹{(Number(modalDetails.invoice.gst_amount) / 2).toFixed(2)}</span>
+                      </div>
+                    </>
+                  )}
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                     <span>Grand Total:</span>
                     <strong style={{ fontSize: 15 }}>

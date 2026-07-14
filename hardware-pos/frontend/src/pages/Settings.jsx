@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { getSetting, setSetting, applyTheme } from '../utils/settings';
+import { useAuth } from '../AuthContext';
+import { api } from '../api';
 
 const themes = [
   { id: 'default', name: 'Workshop Classic', colors: ['#191d20', '#efece4', '#dc9a2e'] },
@@ -9,6 +11,8 @@ const themes = [
 ];
 
 export default function Settings() {
+  const { tenant, updateTenant, isOwner } = useAuth();
+  
   const [shopName, setShopName] = useState('');
   const [shopAddress, setShopAddress] = useState('');
   const [shopPhone, setShopPhone] = useState('');
@@ -24,46 +28,119 @@ export default function Settings() {
   const [message, setMessage] = useState('');
   const [msgType, setMsgType] = useState('success');
 
+  // Staff management states
+  const [users, setUsers] = useState([]);
+  const [newUsername, setNewUsername] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [newDisplayName, setNewDisplayName] = useState('');
+  const [newRole, setNewRole] = useState('worker');
+  const [staffMessage, setStaffMessage] = useState('');
+  const [staffMsgType, setStaffMsgType] = useState('success');
+
   // Load settings on mount
   useEffect(() => {
-    setShopName(getSetting('shop_name', 'ShopSphere'));
-    setShopAddress(getSetting('shop_address', 'Jamshedpur'));
-    setShopPhone(getSetting('shop_phone', '+91 1234567890'));
-    setShopGstin(getSetting('shop_gstin', ''));
-    setGstRate(Number(getSetting('gst_rate', 0)));
-    setLowStockThreshold(Number(getSetting('low_stock_threshold', 10)));
-    setPrintFormat(getSetting('print_format', '80mm'));
-    setWhatsappTemplate(getSetting('whatsapp_template', 'Dear {customer_name},\n\nThank you for shopping with us! Here are your bill details:\nTotal Amount: ₹{total_amount}\nAmount Paid: ₹{amount_paid}\nDue: ₹{due_amount}\n\nHave a great day!'));
-    setSelectedTheme(getSetting('theme', 'default'));
-  }, []);
+    if (tenant) {
+      setShopName(tenant.name || '');
+      setShopAddress(tenant.address || '');
+      setShopPhone(tenant.phone || '');
+      setShopGstin(tenant.gstin || '');
+      setGstRate(Number(tenant.gst_rate || 0));
+      setLowStockThreshold(Number(tenant.low_stock_threshold || 10));
+      setPrintFormat(tenant.print_format || '80mm');
+      setWhatsappTemplate(tenant.whatsapp_template || '');
+      setSelectedTheme(tenant.theme || 'default');
+    }
+  }, [tenant]);
 
-  const handleSave = (e) => {
-    e.preventDefault();
+  // Load staff on mount if owner
+  useEffect(() => {
+    if (isOwner) {
+      loadStaff();
+    }
+  }, [isOwner]);
+
+  async function loadStaff() {
     try {
-      setSetting('shop_name', shopName);
-      setSetting('shop_address', shopAddress);
-      setSetting('shop_phone', shopPhone);
-      setSetting('shop_gstin', shopGstin);
-      setSetting('gst_rate', Number(gstRate));
-      setSetting('low_stock_threshold', Number(lowStockThreshold));
-      setSetting('print_format', printFormat);
-      setSetting('whatsapp_template', whatsappTemplate);
-      setSetting('theme', selectedTheme);
+      const data = await api.getUsers();
+      setUsers(data.users || []);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!isOwner) {
+      setMessage('Only the store Owner can update settings.');
+      setMsgType('error');
+      return;
+    }
+    try {
+      const response = await api.updateTenantSettings({
+        name: shopName,
+        address: shopAddress,
+        phone: shopPhone,
+        gstin: shopGstin,
+        gst_rate: Number(gstRate),
+        low_stock_threshold: Number(lowStockThreshold),
+        print_format: printFormat,
+        whatsapp_template: whatsappTemplate,
+        theme: selectedTheme
+      });
       
-      // Apply theme changes instantly
-      applyTheme();
-      
+      updateTenant(response.tenant);
       setMessage('Settings saved successfully!');
       setMsgType('success');
       window.scrollTo({ top: 0, behavior: 'smooth' });
-      
-      // Auto-clear success message after 3 seconds
       setTimeout(() => setMessage(''), 3000);
     } catch (err) {
       setMessage('Failed to save settings: ' + err.message);
       setMsgType('error');
     }
   };
+
+  async function handleAddStaff(e) {
+    e.preventDefault();
+    setStaffMessage('');
+    if (!newUsername.trim() || !newPassword.trim() || !newDisplayName.trim()) {
+      setStaffMessage('All staff fields are required.');
+      setStaffMsgType('error');
+      return;
+    }
+    try {
+      await api.createUser({
+        username: newUsername.trim(),
+        password: newPassword.trim(),
+        displayName: newDisplayName.trim(),
+        role: newRole
+      });
+      setNewUsername('');
+      setNewPassword('');
+      setNewDisplayName('');
+      setNewRole('worker');
+      setStaffMessage('Staff member added successfully!');
+      setStaffMsgType('success');
+      loadStaff();
+      setTimeout(() => setStaffMessage(''), 3000);
+    } catch (err) {
+      setStaffMessage('Failed to add staff: ' + err.message);
+      setStaffMsgType('error');
+    }
+  }
+
+  async function handleDeleteStaff(id) {
+    if (!window.confirm('Are you sure you want to remove this staff member?')) return;
+    try {
+      await api.deleteUser(id);
+      setStaffMessage('Staff member removed.');
+      setStaffMsgType('success');
+      loadStaff();
+      setTimeout(() => setStaffMessage(''), 3000);
+    } catch (err) {
+      setStaffMessage('Failed to delete staff: ' + err.message);
+      setStaffMsgType('error');
+    }
+  }
 
   const handleThemeSelect = (themeId) => {
     setSelectedTheme(themeId);
@@ -85,7 +162,7 @@ export default function Settings() {
       )}
 
       <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+        <div className="settings-grid">
           
           {/* SHOP PROFILE */}
           <div className="card">
@@ -140,7 +217,7 @@ export default function Settings() {
 
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+        <div className="settings-grid">
           
           {/* WHATSAPP TEMPLATE */}
           <div className="card">
@@ -176,7 +253,7 @@ export default function Settings() {
               🎨 Appearance Theme
             </h3>
             <p style={{ margin: '0 0 14px 0', fontSize: 12.5, color: 'var(--text-dim)' }}>Choose a styling theme that matches your store brand. Clicking a theme selects it; click "Save Settings" below to apply.</p>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, flex: 1 }}>
+            <div className="theme-selector-grid">
               {themes.map((theme) => {
                 const isActive = selectedTheme === theme.id;
                 return (
@@ -229,6 +306,115 @@ export default function Settings() {
           💾 Save Settings
         </button>
       </form>
+
+      {isOwner && (
+        <div className="card" style={{ marginTop: 30 }}>
+          <h3 style={{ margin: '0 0 16px 0', fontSize: 15, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            👥 Staff Management
+          </h3>
+          <p style={{ margin: '0 0 20px 0', fontSize: 12.5, color: 'var(--text-dim)' }}>
+            Add and manage login credentials for your store's workers. Workers can register sales, view products, and perform transactions, but cannot view settings or delete records.
+          </p>
+
+          {staffMessage && (
+            <div className={staffMsgType === 'success' ? 'success-banner' : 'error-banner'} style={{ padding: '12px 18px', marginBottom: 20, display: 'block', fontSize: 13.5, fontWeight: 500, borderRadius: 'var(--radius)' }}>
+              {staffMsgType === 'success' ? '✅ ' : '❌ '}{staffMessage}
+            </div>
+          )}
+
+          {/* Add Staff Member Form */}
+          <form onSubmit={handleAddStaff} className="staff-form-grid">
+            <div className="field" style={{ margin: 0 }}>
+              <label style={{ fontWeight: 600, fontSize: 12, color: 'var(--text-dim)' }}>Worker Username</label>
+              <input 
+                required 
+                value={newUsername} 
+                onChange={(e) => setNewUsername(e.target.value)} 
+                placeholder="e.g. jsmith_worker" 
+                style={{ padding: 10, fontSize: 13 }} 
+              />
+            </div>
+            <div className="field" style={{ margin: 0 }}>
+              <label style={{ fontWeight: 600, fontSize: 12, color: 'var(--text-dim)' }}>Full Name</label>
+              <input 
+                required 
+                value={newDisplayName} 
+                onChange={(e) => setNewDisplayName(e.target.value)} 
+                placeholder="e.g. John Smith" 
+                style={{ padding: 10, fontSize: 13 }} 
+              />
+            </div>
+            <div className="field" style={{ margin: 0 }}>
+              <label style={{ fontWeight: 600, fontSize: 12, color: 'var(--text-dim)' }}>Password</label>
+              <input 
+                type="password" 
+                required 
+                value={newPassword} 
+                onChange={(e) => setNewPassword(e.target.value)} 
+                placeholder="Min 6 chars" 
+                style={{ padding: 10, fontSize: 13 }} 
+              />
+            </div>
+            <div className="field" style={{ margin: 0 }}>
+              <label style={{ fontWeight: 600, fontSize: 12, color: 'var(--text-dim)' }}>Role / Permission Level</label>
+              <select 
+                value={newRole} 
+                onChange={(e) => setNewRole(e.target.value)} 
+                style={{ padding: 10, fontSize: 13, borderRadius: 'var(--radius)', border: '1px solid var(--line-strong)', width: '100%' }}
+              >
+                <option value="worker">Worker (Standard)</option>
+                <option value="worker1">Worker (Assistant)</option>
+                <option value="worker2">Worker (Junior)</option>
+              </select>
+            </div>
+            <button type="submit" className="btn btn-primary" style={{ padding: '10px 20px', fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', height: 40 }}>
+              ➕ Add Staff
+            </button>
+          </form>
+
+          {/* List of current staff members */}
+          <h4 style={{ margin: '20px 0 10px 0', fontSize: 13, fontWeight: 600, color: 'var(--text-dim)' }}>Active Staff Members</h4>
+          {users.length === 0 ? (
+            <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 13, border: '1px dashed var(--line)', borderRadius: 'var(--radius)' }}>
+              No staff members registered for this store. Use the form above to add workers.
+            </div>
+          ) : (
+            <table className="ledger">
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Full Name</th>
+                  <th>Role</th>
+                  <th style={{ width: 100, textAlign: 'center' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u) => (
+                  <tr key={u.id}>
+                    <td><strong>{u.username}</strong></td>
+                    <td>{u.display_name}</td>
+                    <td>
+                      <span className="tag tag-in" style={{ textTransform: 'capitalize' }}>
+                        {u.role}
+                      </span>
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <button 
+                        type="button" 
+                        className="btn btn-secondary btn-sm" 
+                        onClick={() => handleDeleteStaff(u.id)}
+                        style={{ borderColor: 'var(--rust)', color: 'var(--rust)', padding: '4px 8px', fontSize: 11 }}
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
     </div>
   );
 }

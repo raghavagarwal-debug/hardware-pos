@@ -18,7 +18,7 @@ router.use(requireAuth);
 // ---------------------------------------------------------------------------
 router.get('/', async (req, res) => {
   try {
-    const result = await db.query('SELECT * FROM products WHERE is_deleted = 0 ORDER BY name');
+    const result = await db.query('SELECT * FROM products WHERE tenant_id = $1 AND is_deleted = 0 ORDER BY name', [req.user.tenant_id]);
     res.json({ products: result.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -61,8 +61,8 @@ router.post(
         if (!name) continue;
 
         const exists = await db.query(
-          "SELECT id FROM products WHERE LOWER(name)=LOWER($1)",
-          [name]
+          "SELECT id FROM products WHERE tenant_id = $1 AND LOWER(name)=LOWER($2)",
+          [req.user.tenant_id, name]
         );
 
         if (exists.rows.length > 0) {
@@ -74,6 +74,7 @@ router.post(
           `
 INSERT INTO products
 (
+tenant_id,
 name,
 unit,
 current_selling_price,
@@ -84,10 +85,11 @@ last_updated_by
 )
 VALUES
 (
-$1,$2,$3,$4,$5,NOW(),'Import'
+$1,$2,$3,$4,$5,$6,NOW(),'Import'
 )
 `,
           [
+            req.user.tenant_id,
             name,
             unit,
             selling,
@@ -120,18 +122,18 @@ $1,$2,$3,$4,$5,NOW(),'Import'
 );
 router.get('/:id', async (req, res) => {
   try {
-    const productRes = await db.query('SELECT * FROM products WHERE id = $1', [req.params.id]);
+    const productRes = await db.query('SELECT * FROM products WHERE id = $1 AND tenant_id = $2', [req.params.id, req.user.tenant_id]);
     const product = productRes.rows[0];
     if (!product) return res.status(404).json({ error: 'Product not found' });
 
     const priceHistoryRes = await db.query(
-      'SELECT * FROM price_history WHERE product_id = $1 ORDER BY created_at DESC, id DESC',
-      [req.params.id]
+      'SELECT * FROM price_history WHERE product_id = $1 AND tenant_id = $2 ORDER BY created_at DESC, id DESC',
+      [req.params.id, req.user.tenant_id]
     );
 
     const inventoryTimelineRes = await db.query(
-      'SELECT * FROM inventory_transactions WHERE product_id = $1 ORDER BY created_at DESC, id DESC',
-      [req.params.id]
+      'SELECT * FROM inventory_transactions WHERE product_id = $1 AND tenant_id = $2 ORDER BY created_at DESC, id DESC',
+      [req.params.id, req.user.tenant_id]
     );
 
     res.json({
@@ -159,6 +161,7 @@ router.post('/', requireOwner, async (req, res) => {
       const info = await client.query(`
 INSERT INTO products
 (
+    tenant_id,
     name,
     unit,
     current_selling_price,
@@ -169,10 +172,11 @@ INSERT INTO products
 )
 VALUES
 (
-    $1,$2,$3,$4,$5,$6,$7
+    $1,$2,$3,$4,$5,$6,$7,$8
 )
 RETURNING id
 `, [
+        req.user.tenant_id,
         name.trim(),
         unit,
         current_selling_price,
@@ -186,7 +190,7 @@ RETURNING id
     });
 
     const productId = await createTxn();
-    const productRes = await db.query('SELECT * FROM products WHERE id = $1', [productId]);
+    const productRes = await db.query('SELECT * FROM products WHERE id = $1 AND tenant_id = $2', [productId, req.user.tenant_id]);
     res.status(201).json({ product: productRes.rows[0] });
   } catch (err) {
     console.log(err);
@@ -202,7 +206,7 @@ RETURNING id
 // ---------------------------------------------------------------------------
 router.put('/:id/price', requireOwner, async (req, res) => {
   try {
-    const productRes = await db.query('SELECT * FROM products WHERE id = $1', [req.params.id]);
+    const productRes = await db.query('SELECT * FROM products WHERE id = $1 AND tenant_id = $2', [req.params.id, req.user.tenant_id]);
     const product = productRes.rows[0];
     if (!product) return res.status(404).json({ error: 'Product not found' });
 
@@ -218,6 +222,8 @@ router.put('/:id/price', requireOwner, async (req, res) => {
     }
 
     const now = new Date().toISOString();
+    const newMarket = market_price !== undefined ? Number(market_price) : Number(product.market_price);
+    const newDealer = dealer_price !== undefined ? Number(dealer_price) : (product.dealer_price !== null ? Number(product.dealer_price) : null);
 
     const updateTxn = db.transaction(async (client) => {
       const newSelling = sellingChanged ? Number(current_selling_price) : Number(product.current_selling_price);
@@ -229,12 +235,14 @@ router.put('/:id/price', requireOwner, async (req, res) => {
       await client.query(`
         UPDATE products SET
           current_selling_price = $1,
+          market_price = $2,
+          dealer_price = $3,
           last_selling_price = $4,
           previous_selling_price = $5,
           last_updated_date = $6,
           last_updated_by = $7
-        WHERE id = $8
-      `, [newSelling, newMarket, newDealer, lastSellingPrice, previousSellingPrice, now, req.user.username, product.id]);
+        WHERE id = $8 AND tenant_id = $9
+      `, [newSelling, newMarket, newDealer, lastSellingPrice, previousSellingPrice, now, req.user.username, product.id, req.user.tenant_id]);
 
       let fieldChanged = null;
       if (sellingChanged && marketChanged) fieldChanged = 'both';
@@ -244,10 +252,11 @@ router.put('/:id/price', requireOwner, async (req, res) => {
       if (fieldChanged) {
         await client.query(`
           INSERT INTO price_history
-            (product_id, product_name, field_changed, old_price, new_price,
+            (tenant_id, product_id, product_name, field_changed, old_price, new_price,
              old_market_price, new_market_price, updated_by, reason)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         `, [
+          req.user.tenant_id,
           product.id, product.name, fieldChanged,
           sellingChanged ? product.current_selling_price : null,
           sellingChanged ? newSelling : null,
@@ -259,7 +268,7 @@ router.put('/:id/price', requireOwner, async (req, res) => {
     });
 
     await updateTxn();
-    const updatedRes = await db.query('SELECT * FROM products WHERE id = $1', [product.id]);
+    const updatedRes = await db.query('SELECT * FROM products WHERE id = $1 AND tenant_id = $2', [product.id, req.user.tenant_id]);
     res.json({ product: updatedRes.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -272,8 +281,8 @@ router.put('/:id/price', requireOwner, async (req, res) => {
 router.get('/:id/price-history', async (req, res) => {
   try {
     const rowsRes = await db.query(
-      'SELECT * FROM price_history WHERE product_id = $1 ORDER BY created_at DESC, id DESC',
-      [req.params.id]
+      'SELECT * FROM price_history WHERE product_id = $1 AND tenant_id = $2 ORDER BY created_at DESC, id DESC',
+      [req.params.id, req.user.tenant_id]
     );
     res.json({ priceHistory: rowsRes.rows });
   } catch (err) {
@@ -287,8 +296,8 @@ router.get('/:id/price-history', async (req, res) => {
 router.get('/:id/inventory-timeline', async (req, res) => {
   try {
     const rowsRes = await db.query(
-      'SELECT * FROM inventory_transactions WHERE product_id = $1 ORDER BY created_at DESC, id DESC',
-      [req.params.id]
+      'SELECT * FROM inventory_transactions WHERE product_id = $1 AND tenant_id = $2 ORDER BY created_at DESC, id DESC',
+      [req.params.id, req.user.tenant_id]
     );
     res.json({ inventoryTimeline: rowsRes.rows });
   } catch (err) {
@@ -301,11 +310,11 @@ router.get('/:id/inventory-timeline', async (req, res) => {
 // ---------------------------------------------------------------------------
 router.delete('/:id', requireOwner, async (req, res) => {
   try {
-    const productRes = await db.query('SELECT * FROM products WHERE id = $1', [req.params.id]);
+    const productRes = await db.query('SELECT * FROM products WHERE id = $1 AND tenant_id = $2', [req.params.id, req.user.tenant_id]);
     const product = productRes.rows[0];
     if (!product) return res.status(404).json({ error: 'Product not found' });
 
-    await db.query('UPDATE products SET is_deleted = 1 WHERE id = $1', [req.params.id]);
+    await db.query('UPDATE products SET is_deleted = 1 WHERE id = $1 AND tenant_id = $2', [req.params.id, req.user.tenant_id]);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -317,7 +326,7 @@ router.delete('/:id', requireOwner, async (req, res) => {
 // ---------------------------------------------------------------------------
 router.put('/:id', async (req, res) => {
   try {
-    const productRes = await db.query('SELECT * FROM products WHERE id = $1', [req.params.id]);
+    const productRes = await db.query('SELECT * FROM products WHERE id = $1 AND tenant_id = $2', [req.params.id, req.user.tenant_id]);
     const product = productRes.rows[0];
     if (!product) return res.status(404).json({ error: 'Product not found' });
 
@@ -351,7 +360,7 @@ router.put('/:id', async (req, res) => {
           previous_selling_price = $5,
           last_updated_date = $6,
           last_updated_by = $7
-        WHERE id = $8
+        WHERE id = $8 AND tenant_id = $9
       `, [
         name.trim(),
         unit || 'pcs',
@@ -360,15 +369,17 @@ router.put('/:id', async (req, res) => {
         previousSellingPrice,
         now,
         req.user.username,
-        product.id
+        product.id,
+        req.user.tenant_id
       ]);
 
       if (sellingChanged) {
         await client.query(`
           INSERT INTO price_history
-            (product_id, product_name, field_changed, old_price, new_price, updated_by, reason)
-          VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (tenant_id, product_id, product_name, field_changed, old_price, new_price, updated_by, reason)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         `, [
+          req.user.tenant_id,
           product.id,
           name.trim(),
           'selling_price',
@@ -381,7 +392,7 @@ router.put('/:id', async (req, res) => {
     });
 
     await updateTxn();
-    const updatedRes = await db.query('SELECT * FROM products WHERE id = $1', [product.id]);
+    const updatedRes = await db.query('SELECT * FROM products WHERE id = $1 AND tenant_id = $2', [product.id, req.user.tenant_id]);
     res.json({ product: updatedRes.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });

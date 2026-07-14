@@ -193,40 +193,44 @@ function ReportBody({ tab, data }) {
     const rows = data.movement || [];
     if (!rows.length) return <div className="empty-state">No stock movement in this period.</div>;
     return (
-      <table className="ledger">
-        <thead><tr><th>Product</th><th className="num">Stock Out</th></tr></thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={i}>
-              <td>{r.product_name}</td>
-              <td
-                className="num qty-out"
-                style={{ fontWeight: 600 }}
-              >
-                {Math.abs(r.stock_out)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="table-responsive">
+        <table className="ledger">
+          <thead><tr><th>Product</th><th className="num">Stock Out</th></tr></thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <td>{r.product_name}</td>
+                <td
+                  className="num qty-out"
+                  style={{ fontWeight: 600 }}
+                >
+                  {Math.abs(r.stock_out)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     );
   }
   if (tab === 'fastMoving' || tab === 'slowMoving') {
     const rows = (tab === 'fastMoving' ? data.fastMoving : data.slowMoving) || [];
     if (!rows.length) return <div className="empty-state">No sales data yet.</div>;
     return (
-      <table className="ledger">
-        <thead><tr><th>Product</th><th className="num">Units Sold</th><th>Last Sale</th></tr></thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={i}>
-              <td>{r.product_name}</td>
-              <td className="num" style={{ fontWeight: 600 }}>{r.units_sold}</td>
-              <td style={{ fontSize: 12, color: 'var(--text-dim)' }}>{r.last_sale ? new Date(r.last_sale).toLocaleString() : 'Never sold'}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="table-responsive">
+        <table className="ledger">
+          <thead><tr><th>Product</th><th className="num">Units Sold</th><th>Last Sale</th></tr></thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <td>{r.product_name}</td>
+                <td className="num" style={{ fontWeight: 600 }}>{r.units_sold}</td>
+                <td style={{ fontSize: 12, color: 'var(--text-dim)' }}>{r.last_sale ? new Date(r.last_sale).toLocaleString() : 'Never sold'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     );
   }
 

@@ -166,37 +166,39 @@ export default function ProductsList() {
         ) : filtered.length === 0 ? (
           <div className="empty-state">No products found.</div>
         ) : (
-          <table className="ledger">
-            <thead>
-              <tr>
-                <th>Product</th>
-                <th className="num">Selling</th>
-                <th>Last Updated</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((p) => (
-                <tr key={p.id}>
-                  <td>{p.name}</td>
-                  <td className="num">
-                    ₹{Number(p.current_selling_price || 0).toFixed(2)}
-                  </td>
-                  <td style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-                    {p.last_updated_date ? new Date(p.last_updated_date).toLocaleDateString() : '—'} by {p.last_updated_by || '—'}
-                  </td>
-                  <td>
-                    <div style={{ display: 'flex', gap: 12 }}>
-                      <Link className="link-btn" to={`/products/${p.id}`}>Open →</Link>
-                      {isOwner && (
-                        <button className="link-btn" style={{ color: 'var(--rust)', textDecoration: 'none' }} onClick={() => handleDelete(p.id, p.name)}>Delete</button>
-                      )}
-                    </div>
-                  </td>
+          <div className="table-responsive">
+            <table className="ledger">
+              <thead>
+                <tr>
+                  <th>Product</th>
+                  <th className="num">Selling</th>
+                  <th>Last Updated</th>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filtered.map((p) => (
+                  <tr key={p.id}>
+                    <td>{p.name}</td>
+                    <td className="num">
+                      ₹{Number(p.current_selling_price || 0).toFixed(2)}
+                    </td>
+                    <td style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+                      {p.last_updated_date ? new Date(p.last_updated_date).toLocaleDateString() : '—'} by {p.last_updated_by || '—'}
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 12 }}>
+                        <Link className="link-btn" to={`/products/${p.id}`}>Open →</Link>
+                        {isOwner && (
+                          <button className="link-btn" style={{ color: 'var(--rust)', textDecoration: 'none' }} onClick={() => handleDelete(p.id, p.name)}>Delete</button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>

@@ -35,7 +35,7 @@ router.post('/transactions', async (req, res) => {
   }
 
   try {
-    const productRes = await db.query('SELECT * FROM products WHERE id = $1', [product_id]);
+    const productRes = await db.query('SELECT * FROM products WHERE id = $1 AND tenant_id = $2', [product_id, req.user.tenant_id]);
     const product = productRes.rows[0];
     if (!product) return res.status(404).json({ error: 'Product not found' });
 
@@ -54,20 +54,20 @@ router.post('/transactions', async (req, res) => {
     }
 
     const runTxn = db.transaction(async (client) => {
-      await client.query('UPDATE products SET current_stock = $1 WHERE id = $2', [updatedStock, product.id]);
+      await client.query('UPDATE products SET current_stock = $1 WHERE id = $2 AND tenant_id = $3', [updatedStock, product.id, req.user.tenant_id]);
       const info = await client.query(`
         INSERT INTO inventory_transactions
-          (product_id, product_name, transaction_type, quantity, previous_stock, updated_stock,
+          (tenant_id, product_id, product_name, transaction_type, quantity, previous_stock, updated_stock,
            performed_by, remarks, supplier)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING id
-      `, [product.id, product.name, transaction_type, delta, previousStock, updatedStock,
+      `, [req.user.tenant_id, product.id, product.name, transaction_type, delta, previousStock, updatedStock,
       req.user.username, remarks, supplier]);
       return info.rows[0].id;
     });
 
     const id = await runTxn();
-    const recordRes = await db.query('SELECT * FROM inventory_transactions WHERE id = $1', [id]);
+    const recordRes = await db.query('SELECT * FROM inventory_transactions WHERE id = $1 AND tenant_id = $2', [id, req.user.tenant_id]);
     res.status(201).json({ transaction: recordRes.rows[0], updated_stock: updatedStock });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -81,8 +81,8 @@ router.post('/transactions', async (req, res) => {
 router.get('/transactions', async (req, res) => {
   const { product, type, from, to, user, supplier } = req.query;
 
-  const clauses = [];
-  const params = [];
+  const clauses = ['tenant_id = $1'];
+  const params = [req.user.tenant_id];
 
   if (product) { clauses.push('product_id = $' + params.push(product)); }
   if (type) { clauses.push('transaction_type = $' + params.push(type)); }

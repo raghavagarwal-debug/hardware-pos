@@ -1,8 +1,9 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './AuthContext.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import Login from './pages/Login.jsx';
+import Register from './pages/Register.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import ProductsList from './pages/ProductsList.jsx';
 import ProductDetail from './pages/ProductDetail.jsx';
@@ -15,17 +16,39 @@ import { applyTheme } from './utils/settings';
 
 export default function App() {
   const { user, loading } = useAuth();
+  const [isRegister, setIsRegister] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     applyTheme();
   }, []);
 
   if (loading) return <div style={{ padding: 40 }}>Loading…</div>;
-  if (!user) return <Login />;
+  if (!user) {
+    return isRegister ? (
+      <Register onToggleView={() => setIsRegister(false)} />
+    ) : (
+      <Login onToggleView={() => setIsRegister(true)} />
+    );
+  }
 
   return (
-    <div className="app-shell">
-      <Sidebar />
+    <div className={`app-shell ${sidebarOpen ? 'sidebar-open' : ''}`}>
+      {/* Mobile Sticky Header */}
+      <div className="mobile-header no-print">
+        <button className="hamburger-btn" onClick={() => setSidebarOpen(true)}>
+          ☰
+        </button>
+        <div className="mobile-brand">ShopSphere</div>
+        <div style={{ width: 40 }} /> {/* Horizontal spacer to center alignment */}
+      </div>
+
+      {/* Slide-out Overlay */}
+      {sidebarOpen && (
+        <div className="sidebar-overlay no-print" onClick={() => setSidebarOpen(false)} />
+      )}
+
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <main className="main">
         <Routes>
           <Route path="/" element={<Dashboard />} />
