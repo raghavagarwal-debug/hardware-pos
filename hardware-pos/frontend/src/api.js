@@ -1,4 +1,5 @@
-const BASE = '/api';
+const BASE =
+  import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
 
 function getToken() {
   return localStorage.getItem('hw_token');
